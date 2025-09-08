@@ -418,11 +418,32 @@ function generateLevel2() {
     const coins = [];
     const enemies = [];
     
-    // Ground platform
-    platforms.push({ x: 0, y: 368, width: levelWidth, height: 32, color: '#8B4513' });
-    
-    // Starting platform
-    platforms.push({ x: 0, y: 368, width: 120, height: 32, color: '#8B4513' });
+    // Ground with pits (segments) + starting platform
+    const groundY = 368;
+    const groundH = 32;
+    let gx = 0;
+    const minSeg = 140;
+    const maxSeg = 300;
+    const minPit = 80;
+    const maxPit = 160;
+    let firstSegmentWidth = 200; // ensure safe start area
+    // First ground segment at x=0
+    platforms.push({ x: 0, y: groundY, width: firstSegmentWidth, height: groundH, color: '#8B4513', isGround: true });
+    gx += firstSegmentWidth;
+    // Starting platform (kept for safe zone and existing logic)
+    platforms.push({ x: 0, y: groundY, width: 120, height: groundH, color: '#8B4513' });
+    // Fill remaining ground with alternating pits and segments
+    while (gx < levelWidth) {
+        // Create a pit
+        const pitW = Math.floor(minPit + Math.random() * (maxPit - minPit + 1));
+        gx += pitW;
+        if (gx >= levelWidth) break;
+        // Create a segment
+        let segW = Math.floor(minSeg + Math.random() * (maxSeg - minSeg + 1));
+        if (gx + segW > levelWidth) segW = levelWidth - gx;
+        platforms.push({ x: gx, y: groundY, width: segW, height: groundH, color: '#8B4513', isGround: true });
+        gx += segW;
+    }
     
     // Generate random platforms
     let currentX = 200;
@@ -524,9 +545,12 @@ function generateLevel2() {
         let isGroundSpike = Math.random() < 0.3; // 30% chance for ground spikes
         
         if (isGroundSpike) {
-            // Place spike on ground
-            spikeX = Math.floor(Math.random() * (levelWidth - 32));
-            spikeY = 368 - 18; // Ground level minus spike height
+            // Place spike on a random ground segment
+            const groundSegments = platforms.filter(p => p.isGround);
+            if (groundSegments.length === 0) continue;
+            const g = groundSegments[Math.floor(Math.random() * groundSegments.length)];
+            spikeX = g.x + Math.floor(Math.random() * Math.max(1, g.width - 32));
+            spikeY = groundY - 18; // Ground level minus spike height
             
             // Check if spike is too close to starting position
             const distanceFromStart = Math.abs(spikeX - (startPlatform.x + startPlatform.width / 2));
@@ -535,8 +559,9 @@ function generateLevel2() {
             }
         } else {
             // Place spike on platform
-            const platformIndex = Math.floor(Math.random() * (platforms.length - 1)) + 1; // Skip ground
-            const platform = platforms[platformIndex];
+            const candidatePlatforms = platforms.filter(p => !p.isGround && p !== startPlatform);
+            if (candidatePlatforms.length === 0) continue;
+            const platform = candidatePlatforms[Math.floor(Math.random() * candidatePlatforms.length)];
             
             // Random position on platform
             spikeX = platform.x + Math.floor(Math.random() * (platform.width - 32));
@@ -637,8 +662,9 @@ function generateLevel2() {
         enemyAttempts++;
         
         // Find a random platform (not starting platform)
-        const platformIndex = Math.floor(Math.random() * (platforms.length - 2)) + 2; // Skip ground and starting platform
-        const platform = platforms[platformIndex];
+        const candidatePlatforms = platforms.filter(p => !p.isGround && p !== startPlatform);
+        if (candidatePlatforms.length === 0) break;
+        const platform = candidatePlatforms[Math.floor(Math.random() * candidatePlatforms.length)];
         
         // Random position on platform
         const enemyX = platform.x + Math.floor(Math.random() * (platform.width - 24));
@@ -901,6 +927,13 @@ function update() {
     checkEnemyCollision();
     checkCoinCollection();
     checkStarCollection();
+
+    // Pit death on Level 2 when falling below the screen
+    if (gameState.currentLevel === 2 && player.y > canvas.height) {
+        playDeathSound();
+        resetPlayer();
+        gameStatus.textContent = "💀 You fell into a pit!";
+    }
 
     // Consume one-frame jump press flag
     keys.jumpJustPressed = false;
