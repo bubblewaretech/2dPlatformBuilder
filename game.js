@@ -1,7 +1,7 @@
 // Game constants
-const GRAVITY = 0.6;
+const GRAVITY = 0.5;
 const JUMP_FORCE = -9; // Slightly increased jump height
-const MOVE_SPEED = 6; // Increased move speed
+const MOVE_SPEED = 5; // Increased move speed
 const BLOCK_SIZE = 32;
 const PLAYER_SIZE = 24;
 
@@ -9,12 +9,14 @@ const PLAYER_SIZE = 24;
 let gameState = {
     running: true,
     won: false,
-    blocksRemaining: 3, // Increased to 3 blocks
+    blocksRemaining: 3, // Remaining blocks this level
+    maxBlocks: 3,       // Permanent capacity (increases with stars)
     coins: 0,
     currentLevel: 1,
     levelComplete: false,
     blocksUsed: 0,
-    showLevelTransition: false
+    showLevelTransition: false,
+    starsThisLevel: 0
 };
 
 // Input handling
@@ -90,14 +92,26 @@ let endGoal = currentLevelData.endGoal;
 // Buildable blocks array
 const buildableBlocks = [];
 
+// Per-level star (single instance)
+let levelStar = null; // { x, y, width, height, collected, color }
+
 // Canvas setup
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const gameStatus = document.getElementById('game-status');
 const blockCount = document.getElementById('block-count');
+const maxBlocksDisplay = document.getElementById('max-blocks');
 const coinCount = document.getElementById('coin-count');
 const totalCoinsDisplay = document.getElementById('total-coins');
 const currentLevelDisplay = document.getElementById('current-level');
+const starCount = document.getElementById('star-count');
+const totalStarsDisplay = document.getElementById('total-stars');
+
+// Helper to refresh block counters
+function updateBlockCounters() {
+    if (blockCount) blockCount.textContent = gameState.blocksRemaining;
+    if (maxBlocksDisplay) maxBlocksDisplay.textContent = gameState.maxBlocks;
+}
 
 // Audio setup
 let audioContext;
@@ -161,6 +175,12 @@ function playWinSound() {
     notes.forEach((note, index) => {
         setTimeout(() => playSound(note, 0.3, 'sine', 0.2), index * 150);
     });
+}
+
+// Star collect sound
+function playStarSound() {
+    // Quick ascending chime
+    [740, 880, 1175].forEach((f, i) => setTimeout(() => playSound(f, 0.12, 'triangle', 0.2), i * 80));
 }
 
 // Background music (8-bit style inspired by Mega Man and Pizza Tower)
@@ -373,9 +393,9 @@ function resetPlayer() {
     
     // Reset blocks
     buildableBlocks.length = 0;
-    gameState.blocksRemaining = 3;
+    gameState.blocksRemaining = gameState.maxBlocks;
     gameState.blocksUsed = 0;
-    blockCount.textContent = gameState.blocksRemaining;
+    if (typeof updateBlockCounters === 'function') updateBlockCounters();
 
     // Reset coins and enemies on death
     gameState.coins = 0;
@@ -697,23 +717,29 @@ function loadLevel(levelNumber) {
     
     // Reset game state
     buildableBlocks.length = 0;
-    gameState.blocksRemaining = 3;
+    gameState.blocksRemaining = gameState.maxBlocks;
     gameState.blocksUsed = 0;
     gameState.coins = 0;
     gameState.running = true;
     gameState.won = false;
     gameState.levelComplete = false;
     gameState.showLevelTransition = false;
+    gameState.starsThisLevel = 0;
     
     // Reset coins and enemies
     coins.forEach(coin => coin.collected = false);
     enemies.forEach(enemy => enemy.alive = true);
+
+    // Spawn the single star for this level
+    levelStar = spawnLevelStar();
     
     // Update UI
     currentLevelDisplay.textContent = levelNumber;
-    blockCount.textContent = gameState.blocksRemaining;
+    updateBlockCounters();
     coinCount.textContent = gameState.coins;
     totalCoinsDisplay.textContent = coins.length;
+    if (starCount) starCount.textContent = gameState.starsThisLevel;
+    if (totalStarsDisplay) totalStarsDisplay.textContent = 1;
     gameStatus.textContent = `Level ${levelNumber} - Ready to play!`;
     
     // Stop any existing music and restart
@@ -734,12 +760,49 @@ function checkCoinCollection() {
     }
 }
 
+// Spawn a single star on a random non-ground platform
+function spawnLevelStar() {
+    const candidatePlatforms = platforms.filter(p => p.y < 360 && p.width >= 24);
+    if (candidatePlatforms.length === 0) return null;
+    const platform = candidatePlatforms[Math.floor(Math.random() * candidatePlatforms.length)];
+    const starWidth = 20;
+    const starHeight = 20;
+    const margin = 6;
+    const minX = platform.x + margin;
+    const maxX = platform.x + platform.width - starWidth - margin;
+    if (maxX <= minX) return null;
+    const x = Math.floor(minX + Math.random() * (maxX - minX));
+    const y = platform.y - starHeight - 4;
+    return { x, y, width: starWidth, height: starHeight, collected: false, color: '#FFD700' };
+}
+
+// Check star collection
+function checkStarCollection() {
+    if (!levelStar || levelStar.collected) return;
+    if (checkCollision(player, levelStar)) {
+        levelStar.collected = true;
+        gameState.starsThisLevel = 1;
+        gameState.maxBlocks += 1;       // Permanently increase capacity
+        gameState.blocksRemaining += 1; // Also increase remaining for this level
+        updateBlockCounters();
+        if (starCount) starCount.textContent = gameState.starsThisLevel;
+        playStarSound();
+        gameStatus.textContent = `⭐ Star collected! Max blocks: ${gameState.maxBlocks}`;
+    }
+}
+
 // Handle building
 function handleBuilding() {
     if (keys.build && gameState.blocksRemaining > 0) {
         // Place block at player's position (snapped to grid)
         const blockX = Math.floor(player.x / BLOCK_SIZE) * BLOCK_SIZE;
-        const blockY = Math.floor(player.y / BLOCK_SIZE) * BLOCK_SIZE;
+        // Place block below the player (snapped to grid)
+        // If the player's feet are exactly on a grid line, place directly below;
+        // otherwise, place on the next grid cell beneath to avoid overlap.
+        let blockY = Math.floor((player.y + player.height) / BLOCK_SIZE) * BLOCK_SIZE;
+        if (blockY < player.y + player.height) {
+            blockY += BLOCK_SIZE;
+        }
         
         // Check if position is already occupied
         const newBlock = { x: blockX, y: blockY, width: BLOCK_SIZE, height: BLOCK_SIZE, color: '#654321' };
@@ -756,7 +819,7 @@ function handleBuilding() {
             buildableBlocks.push(newBlock);
             gameState.blocksRemaining--;
             gameState.blocksUsed++;
-            blockCount.textContent = gameState.blocksRemaining;
+            updateBlockCounters();
             playBuildSound();
             gameStatus.textContent = `Block placed! ${gameState.blocksRemaining} blocks remaining.`;
         } else {
@@ -837,6 +900,7 @@ function update() {
     checkObstacleCollision();
     checkEnemyCollision();
     checkCoinCollection();
+    checkStarCollection();
 }
 
 // Camera offset for scrolling
@@ -919,6 +983,38 @@ function render() {
         }
     });
     
+    // Draw star (single per level)
+    if (levelStar && !levelStar.collected) {
+        // Draw a 5-point star
+        const cx = levelStar.x + levelStar.width / 2;
+        const cy = levelStar.y + levelStar.height / 2;
+        const spikes = 5;
+        const outerRadius = Math.min(levelStar.width, levelStar.height) / 2;
+        const innerRadius = outerRadius / 2.5;
+        let rot = Math.PI / 2 * 3;
+        let x = cx;
+        let y = cy;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - outerRadius);
+        for (let i = 0; i < spikes; i++) {
+            x = cx + Math.cos(rot) * outerRadius;
+            y = cy + Math.sin(rot) * outerRadius;
+            ctx.lineTo(x, y);
+            rot += Math.PI / spikes;
+            x = cx + Math.cos(rot) * innerRadius;
+            y = cy + Math.sin(rot) * innerRadius;
+            ctx.lineTo(x, y);
+            rot += Math.PI / spikes;
+        }
+        ctx.lineTo(cx, cy - outerRadius);
+        ctx.closePath();
+        ctx.fillStyle = levelStar.color;
+        ctx.fill();
+        ctx.strokeStyle = '#DAA520';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+    
     // Draw buildable blocks
     buildableBlocks.forEach(block => {
         ctx.fillStyle = block.color;
@@ -966,7 +1062,7 @@ function render() {
         ctx.fillText('🎉 Level 1 Complete! 🎉', canvas.width / 2, canvas.height / 2 - 60);
         
         ctx.font = '18px Arial';
-        ctx.fillText(`Blocks Used: ${gameState.blocksUsed}/3`, canvas.width / 2, canvas.height / 2 - 20);
+        ctx.fillText(`Blocks Used: ${gameState.blocksUsed}/${gameState.maxBlocks}`, canvas.width / 2, canvas.height / 2 - 20);
         ctx.fillText(`Coins Collected: ${gameState.coins}/${coins.length}`, canvas.width / 2, canvas.height / 2 + 10);
         
         ctx.font = '16px Arial';
@@ -984,6 +1080,14 @@ function gameLoop() {
 // Initialize audio and start the game
 initAudio();
 playBackgroundMusic();
+
+// Initialize UI and star for the starting level
+levelStar = spawnLevelStar();
+gameState.starsThisLevel = 0;
+if (totalStarsDisplay) totalStarsDisplay.textContent = 1;
+if (starCount) starCount.textContent = gameState.starsThisLevel;
+updateBlockCounters();
+
 gameLoop();
 
 // Reset game function (for future use)
@@ -995,7 +1099,7 @@ function resetGame() {
     player.onGround = false;
     
     buildableBlocks.length = 0;
-    gameState.blocksRemaining = 3;
+    gameState.blocksRemaining = gameState.maxBlocks;
     gameState.coins = 0;
     gameState.running = true;
     gameState.won = false;
@@ -1003,7 +1107,7 @@ function resetGame() {
     // Reset coins
     coins.forEach(coin => coin.collected = false);
     
-    blockCount.textContent = gameState.blocksRemaining;
+    updateBlockCounters();
     coinCount.textContent = gameState.coins;
     gameStatus.textContent = "Ready to play!";
     
