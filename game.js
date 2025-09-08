@@ -24,6 +24,7 @@ const keys = {
     left: false,
     right: false,
     jump: false,
+    jumpJustPressed: false,
     build: false
 };
 
@@ -236,6 +237,7 @@ document.addEventListener('keydown', (e) => {
                 gameState.currentLevel = 2;
                 loadLevel(2);
             } else {
+                if (!keys.jump) keys.jumpJustPressed = true; // only on fresh press
                 keys.jump = true;
             }
             break;
@@ -859,8 +861,7 @@ function update() {
     
     if (gameState.won) return;
     
-    // Reset justLanded flag at start of frame
-    player.justLanded = false;
+    // Input handling uses fresh-press for jump; avoid auto re-jumps
     
     // Handle input
     if (keys.left) {
@@ -871,10 +872,9 @@ function update() {
         player.velocityX *= 0.8; // Friction
     }
     
-    if (keys.jump && player.onGround && !player.justLanded) {
+    if (keys.jumpJustPressed && player.onGround) {
         player.velocityY = JUMP_FORCE;
         player.onGround = false;
-        player.justLanded = false;
         playJumpSound();
     }
     
@@ -901,6 +901,9 @@ function update() {
     checkEnemyCollision();
     checkCoinCollection();
     checkStarCollection();
+
+    // Consume one-frame jump press flag
+    keys.jumpJustPressed = false;
 }
 
 // Camera offset for scrolling
