@@ -79,7 +79,9 @@ const levels = {
         playerStart: { x: 50, y: 300 },
         levelWidth: 1500
     },
-    2: null // Will be generated procedurally
+    2: null, // Will be generated procedurally
+    3: null,  // Will be generated procedurally
+    4: null   // Boss level
 };
 
 // Current level data (will be set based on currentLevel)
@@ -95,6 +97,12 @@ const buildableBlocks = [];
 
 // Per-level star (single instance)
 let levelStar = null; // { x, y, width, height, collected, color }
+
+// Boss level state
+let boss = null; // { x,y,width,height,color,hp,state,targetX,targetY,timers }
+let bossDoors = []; // two door objects acting as dynamic platforms
+let bombs = []; // { x,y,vx,vy,width,height,active }
+let isBossLevel = false;
 
 // Canvas setup
 const canvas = document.getElementById('gameCanvas');
@@ -221,6 +229,32 @@ function stopBackgroundMusic() {
     isMusicPlaying = false;
 }
 
+// Boss level music (different motif)
+function playBossMusic() {
+    if (!audioContext || isMusicPlaying) return;
+    isMusicPlaying = true;
+    const motif = [
+        { freq: 196, duration: 0.25 },
+        { freq: 262, duration: 0.25 },
+        { freq: 311, duration: 0.25 },
+        { freq: 392, duration: 0.25 },
+        { freq: 349, duration: 0.25 },
+        { freq: 311, duration: 0.25 },
+        { freq: 262, duration: 0.25 },
+        { freq: 0,   duration: 0.25 }
+    ];
+    function loop() {
+        if (!isMusicPlaying) return;
+        motif.forEach((note, i) => {
+            setTimeout(() => {
+                if (note.freq > 0) playSound(note.freq, note.duration, 'sawtooth', 0.06);
+            }, i * 250);
+        });
+        setTimeout(loop, motif.length * 250 + 300);
+    }
+    loop();
+}
+
 // Input event listeners
 document.addEventListener('keydown', (e) => {
     switch(e.code) {
@@ -233,9 +267,10 @@ document.addEventListener('keydown', (e) => {
         case 'Space':
             e.preventDefault();
             if (gameState.showLevelTransition) {
-                // Start level 2
-                gameState.currentLevel = 2;
-                loadLevel(2);
+                // Advance to next level
+                const nextLevel = gameState.currentLevel + 1;
+                gameState.currentLevel = nextLevel;
+                loadLevel(nextLevel);
             } else {
                 if (!keys.jump) keys.jumpJustPressed = true; // only on fresh press
                 keys.jump = true;
@@ -721,10 +756,234 @@ function generateLevel2() {
     };
 }
 
+// Procedural generation for Level 3 (slightly harder than Level 2)
+function generateLevel3() {
+    const levelWidth = 2200;
+    const platforms = [];
+    const obstacles = [];
+    const coins = [];
+    const enemies = [];
+
+    // Ground with pits (segments) + starting platform
+    const groundY = 368;
+    const groundH = 32;
+    let gx = 0;
+    const minSeg = 120; // slightly smaller segments
+    const maxSeg = 280;
+    const minPit = 100; // slightly larger pits
+    const maxPit = 200;
+    let firstSegmentWidth = 220; // ensure safe start area
+    // First ground segment at x=0
+    platforms.push({ x: 0, y: groundY, width: firstSegmentWidth, height: groundH, color: '#8B4513', isGround: true });
+    gx += firstSegmentWidth;
+    // Starting platform (kept for safe zone and existing logic)
+    platforms.push({ x: 0, y: groundY, width: 120, height: groundH, color: '#8B4513' });
+    // Fill remaining ground with alternating pits and segments
+    while (gx < levelWidth) {
+        // Create a pit
+        const pitW = Math.floor(minPit + Math.random() * (maxPit - minPit + 1));
+        gx += pitW;
+        if (gx >= levelWidth) break;
+        // Create a segment
+        let segW = Math.floor(minSeg + Math.random() * (maxSeg - minSeg + 1));
+        if (gx + segW > levelWidth) segW = levelWidth - gx;
+        platforms.push({ x: gx, y: groundY, width: segW, height: groundH, color: '#8B4513', isGround: true });
+        gx += segW;
+    }
+
+    // Generate random platforms
+    let currentX = 200;
+    let currentY = 340;
+    const platformCount = 10 + Math.floor(Math.random() * 5); // 10-14 platforms
+
+    for (let i = 0; i < platformCount; i++) {
+        const platformWidth = 60 + Math.floor(Math.random() * 61);
+        const gap = 90 + Math.floor(Math.random() * 81); // 90-170
+        currentX += gap;
+        const heightVariation = -70 + Math.floor(Math.random() * 101); // a bit more range
+        currentY = 330 + heightVariation;
+        currentY = Math.max(100, Math.min(350, currentY));
+
+        let canPlacePlatform = true;
+        const newPlatform = { x: currentX, y: currentY, width: platformWidth, height: 32, color: '#8B4513' };
+        if (currentY + 32 > 368) canPlacePlatform = false;
+        if (canPlacePlatform) {
+            for (let existingPlatform of platforms) {
+                if (checkCollision(newPlatform, existingPlatform)) { canPlacePlatform = false; break; }
+            }
+        }
+        if (canPlacePlatform) {
+            platforms.push(newPlatform);
+        }
+    }
+
+    // Goal platform (near the end)
+    const goalX = levelWidth - 120;
+    const goalY = 90 + Math.floor(Math.random() * 120);
+    platforms.push({ x: goalX, y: goalY, width: 90, height: 32, color: '#8B4513' });
+
+    // Spikes
+    const spikeCount = 10 + Math.floor(Math.random() * 5); // 10-14 spikes
+    let spikesPlaced = 0;
+    let spikeAttempts = 0;
+    const maxSpikeAttempts = 100;
+    const startPlatform = platforms[1];
+    const safeZone = 180;
+
+    while (spikesPlaced < spikeCount && spikeAttempts < maxSpikeAttempts) {
+        spikeAttempts++;
+        let spikeX, spikeY;
+        let isGroundSpike = Math.random() < 0.35;
+
+        if (isGroundSpike) {
+            const groundSegments = platforms.filter(p => p.isGround);
+            if (groundSegments.length === 0) continue;
+            const g = groundSegments[Math.floor(Math.random() * groundSegments.length)];
+            spikeX = g.x + Math.floor(Math.random() * Math.max(1, g.width - 32));
+            spikeY = groundY - 18;
+            const distanceFromStart = Math.abs(spikeX - (startPlatform.x + startPlatform.width / 2));
+            if (distanceFromStart < safeZone) { continue; }
+        } else {
+            const candidatePlatforms = platforms.filter(p => !p.isGround && p !== startPlatform);
+            if (candidatePlatforms.length === 0) continue;
+            const platform = candidatePlatforms[Math.floor(Math.random() * candidatePlatforms.length)];
+            spikeX = platform.x + Math.floor(Math.random() * (platform.width - 32));
+            spikeY = platform.y - 18;
+            const distanceFromStart = Math.abs(spikeX - (startPlatform.x + startPlatform.width / 2));
+            if (platform === startPlatform && distanceFromStart < safeZone) { continue; }
+        }
+
+        let canPlaceSpike = true;
+        const spikeRect = { x: spikeX, y: spikeY, width: 32, height: 18 };
+        for (let existingObstacle of obstacles) {
+            if (checkCollision(spikeRect, existingObstacle)) { canPlaceSpike = false; break; }
+        }
+        if (canPlaceSpike) {
+            obstacles.push({ x: spikeX, y: spikeY, width: 32, height: 18, type: 'spike', color: '#8B0000' });
+            spikesPlaced++;
+        }
+    }
+
+    // Coins
+    const coinCount = 9 + Math.floor(Math.random() * 5);
+    let coinsPlaced = 0;
+    let attempts = 0;
+    const maxAttempts = 60;
+    while (coinsPlaced < coinCount && attempts < maxAttempts) {
+        attempts++;
+        const platformIndex = Math.floor(Math.random() * (platforms.length - 1)) + 1;
+        const platform = platforms[platformIndex];
+        const coinX = platform.x + Math.floor(Math.random() * (platform.width - 16));
+        const coinY = platform.y - 20;
+        let canPlaceCoin = true;
+        const coinRect = { x: coinX, y: coinY, width: 16, height: 16 };
+        for (let obstacle of obstacles) {
+            if (checkCollision(coinRect, obstacle)) { canPlaceCoin = false; break; }
+        }
+        if (coinY > 350) canPlaceCoin = false;
+        for (let existingCoin of coins) {
+            if (checkCollision(coinRect, existingCoin)) { canPlaceCoin = false; break; }
+        }
+        if (canPlaceCoin) {
+            coins.push({ x: coinX, y: coinY, width: 16, height: 16, collected: false, color: '#FFD700' });
+            coinsPlaced++;
+        }
+    }
+
+    // Enemies
+    const enemyCount = 4 + Math.floor(Math.random() * 4); // 4-7
+    let enemiesPlaced = 0;
+    let enemyAttempts = 0;
+    const maxEnemyAttempts = 40;
+    while (enemiesPlaced < enemyCount && enemyAttempts < maxEnemyAttempts) {
+        enemyAttempts++;
+        const candidatePlatforms = platforms.filter(p => !p.isGround && p !== startPlatform);
+        if (candidatePlatforms.length === 0) break;
+        const platform = candidatePlatforms[Math.floor(Math.random() * candidatePlatforms.length)];
+        const enemyX = platform.x + Math.floor(Math.random() * (platform.width - 24));
+        const enemyY = platform.y - 24;
+        let canPlaceEnemy = true;
+        const enemyRect = { x: enemyX, y: enemyY, width: 24, height: 24 };
+        for (let obstacle of obstacles) {
+            if (checkCollision(enemyRect, obstacle)) { canPlaceEnemy = false; break; }
+        }
+        if (enemyY > 340) canPlaceEnemy = false;
+        for (let existingEnemy of enemies) {
+            if (checkCollision(enemyRect, existingEnemy)) { canPlaceEnemy = false; break; }
+        }
+        if (canPlaceEnemy) {
+            enemies.push({ x: enemyX, y: enemyY, width: 24, height: 24, type: 'enemy', color: '#8B0000', direction: Math.random() > 0.5 ? 1 : -1, speed: 1.7 + Math.random() * 0.6, alive: true });
+            enemiesPlaced++;
+        }
+    }
+
+    return {
+        platforms,
+        obstacles,
+        coins,
+        enemies,
+        endGoal: { x: levelWidth - 50, y: goalY - 32, width: 32, height: 32, color: '#4CAF50' },
+        playerStart: { x: 50, y: 300 },
+        levelWidth
+    };
+}
+
+// Boss level (Level 4): arena with doors and a boss
+function generateLevel4() {
+    const levelWidth = 1400;
+    const platforms = [];
+    const obstacles = [];
+    const coins = []; // no coins needed, keep empty
+    const enemies = []; // regular enemies not used
+
+    // Flat ground to traverse to arena
+    platforms.push({ x: 0, y: 368, width: levelWidth, height: 32, color: '#8B4513', isGround: true });
+
+    // Arena frame (blue): left pillar, top beam, right pillar
+    const arenaLeft = 500;
+    const arenaWidth = 360;
+    const arenaRight = arenaLeft + arenaWidth;
+    const pillarWidth = 24;
+    const beamHeight = 24;
+    const pillarHeight = 260; // extends close to ground
+    const topY = 120;
+
+    // Left pillar
+    platforms.push({ x: arenaLeft, y: topY, width: pillarWidth, height: pillarHeight, color: '#1E90FF', isArena: true });
+    // Top beam
+    platforms.push({ x: arenaLeft, y: topY, width: arenaWidth, height: beamHeight, color: '#1E90FF', isArena: true });
+    // Right pillar
+    platforms.push({ x: arenaRight - pillarWidth, y: topY, width: pillarWidth, height: pillarHeight, color: '#1E90FF', isArena: true });
+
+    // Small interior ledges near each pillar (brown)
+    platforms.push({ x: arenaLeft + 36, y: topY + 120, width: 40, height: 16, color: '#8B4513', isArenaLedge: true });
+    platforms.push({ x: arenaRight - 76, y: topY + 120, width: 40, height: 16, color: '#8B4513', isArenaLedge: true });
+
+    // Goal flag beyond the arena on the right
+    const flagX = arenaRight + 70;
+    const flagY = 368 - 32 - 32 + 24; // near ground
+    const endGoal = { x: flagX, y: 56, width: 32, height: 32, color: '#4CAF50' };
+    // Use same y as level 1 goal values (top-left origin); keep 56 from previous levels consistency
+
+    return {
+        platforms,
+        obstacles,
+        coins,
+        enemies,
+        endGoal,
+        playerStart: { x: 50, y: 300 },
+        levelWidth
+    };
+}
+
 // Load level
 function loadLevel(levelNumber) {
     if (levelNumber === 2) {
         currentLevelData = generateLevel2();
+    } else if (levelNumber === 3) {
+        currentLevelData = generateLevel3();
+    } else if (levelNumber === 4) {
+        currentLevelData = generateLevel4();
     } else {
         currentLevelData = levels[levelNumber];
     }
@@ -753,13 +1012,21 @@ function loadLevel(levelNumber) {
     gameState.levelComplete = false;
     gameState.showLevelTransition = false;
     gameState.starsThisLevel = 0;
+    isBossLevel = (levelNumber === 4);
+    bombs = [];
+    boss = null;
+    bossDoors = [];
     
     // Reset coins and enemies
     coins.forEach(coin => coin.collected = false);
     enemies.forEach(enemy => enemy.alive = true);
 
-    // Spawn the single star for this level
-    levelStar = spawnLevelStar();
+    // Spawn the single star for this level (skip on boss level)
+    if (isBossLevel) {
+        levelStar = null;
+    } else {
+        levelStar = spawnLevelStar();
+    }
     
     // Update UI
     currentLevelDisplay.textContent = levelNumber;
@@ -767,12 +1034,17 @@ function loadLevel(levelNumber) {
     coinCount.textContent = gameState.coins;
     totalCoinsDisplay.textContent = coins.length;
     if (starCount) starCount.textContent = gameState.starsThisLevel;
-    if (totalStarsDisplay) totalStarsDisplay.textContent = 1;
+    if (totalStarsDisplay) totalStarsDisplay.textContent = isBossLevel ? 0 : 1;
     gameStatus.textContent = `Level ${levelNumber} - Ready to play!`;
     
-    // Stop any existing music and restart
+    // Stop any existing music and start appropriate track
     stopBackgroundMusic();
-    playBackgroundMusic();
+    if (isBossLevel) {
+        playBossMusic();
+        initBossLevelState();
+    } else {
+        playBackgroundMusic();
+    }
 }
 
 // Check coin collection
@@ -784,6 +1056,161 @@ function checkCoinCollection() {
             coinCount.textContent = gameState.coins;
             playCoinSound();
             gameStatus.textContent = `💰 Coin collected! Total: ${gameState.coins}`;
+        }
+    }
+}
+
+// Initialize boss state for Level 4
+function initBossLevelState() {
+    // Arena bounds from generateLevel4
+    const arenaLeft = 500;
+    const arenaWidth = 360;
+    const arenaRight = arenaLeft + arenaWidth;
+    const topY = 120;
+
+    // Boss starts in the top-left corner inside the blue area
+    boss = {
+        x: arenaLeft + 10,
+        y: topY + 10,
+        width: 28,
+        height: 28,
+        color: '#ff4d4d',
+        hp: 3,
+        alive: true,
+        state: 'idle', // idle | throwing | descend | rising | defeated
+        lastThrow: 0,
+        throwInterval: 1200,
+        lastDescend: 0,
+        descendInterval: 4000,
+        targetX: arenaLeft + 10,
+        targetY: topY + 10
+    };
+
+    // Doors just inside the pillars; start raised (inactive)
+    const doorWidth = 28;
+    const doorHeight = 120;
+    bossDoors = [
+        { x: arenaLeft + 26, y: topY - doorHeight, width: doorWidth, height: doorHeight, color: '#8B4513', active: false },
+        { x: arenaRight - 26 - doorWidth, y: topY - doorHeight, width: doorWidth, height: doorHeight, color: '#8B4513', active: false }
+    ];
+}
+
+// Spawn a bomb from boss towards the player
+function spawnBomb() {
+    if (!boss || !boss.alive) return;
+    const speed = 3.2;
+    const dx = (player.x + player.width / 2) - (boss.x + boss.width / 2);
+    const dy = (player.y + player.height / 2) - (boss.y + boss.height / 2);
+    const dist = Math.max(1, Math.hypot(dx, dy));
+    const vx = (dx / dist) * speed;
+    const vy = (dy / dist) * speed - 2.0; // add arc
+    bombs.push({ x: boss.x + boss.width / 2 - 6, y: boss.y + boss.height / 2 - 6, vx, vy, width: 12, height: 12, active: true });
+}
+
+// Update boss, doors, and bombs (Level 4)
+function updateBossLevel(delta) {
+    if (!isBossLevel) return;
+
+    const now = performance.now ? performance.now() : Date.now();
+
+    // Trigger fight when player enters the arena
+    const inArenaX = player.x > 500 && player.x < 860;
+    const inArenaY = player.y < 360; // basically anywhere above ground near arena
+    const fightStarted = bossDoors[0] && bossDoors[0].active;
+    if (!fightStarted && inArenaX && inArenaY) {
+        // Drop doors
+        bossDoors.forEach(d => { d.active = true; d.y = 240; }); // initial drop position
+        // Insert into platforms so they block the player
+        // We add once; they are dynamic but collision just uses their current rect
+        platforms.push(bossDoors[0], bossDoors[1]);
+        gameStatus.textContent = '⚠️ Doors closed! Defeat Bomb Man!';
+    }
+
+    // Animate doors to ground when active
+    bossDoors.forEach(d => {
+        if (d.active && d.y < 368 - d.height) {
+            d.y += 6; // fast drop
+            if (d.y > 368 - d.height) d.y = 368 - d.height;
+        }
+    });
+
+    if (boss && boss.alive) {
+        // Throw bombs periodically
+        if (fightStarted && now - boss.lastThrow > boss.throwInterval) {
+            spawnBomb();
+            boss.lastThrow = now;
+        }
+        // Descend periodically to allow head-jump
+        if (fightStarted && now - boss.lastDescend > boss.descendInterval) {
+            boss.state = 'descend';
+            boss.lastDescend = now;
+        }
+        if (boss.state === 'descend') {
+            boss.y += 2.2;
+            if (boss.y >= 260) {
+                boss.state = 'rising';
+            }
+        } else if (boss.state === 'rising') {
+            boss.y -= 2.0;
+            if (boss.y <= 130) {
+                boss.y = 130;
+                boss.state = 'idle';
+            }
+        }
+    }
+
+    // Update bombs
+    bombs.forEach(b => {
+        if (!b.active) return;
+        b.vy += GRAVITY * 0.9;
+        b.x += b.vx;
+        b.y += b.vy;
+        // Collide with platforms (including doors) or ground bounds
+        const rect = { x: b.x, y: b.y, width: b.width, height: b.height };
+        let collided = false;
+        for (let p of [...platforms, ...buildableBlocks]) {
+            if (checkCollision(rect, p)) { collided = true; break; }
+        }
+        if (b.y > 368 - b.height) collided = true;
+        if (collided) b.active = false; // bomb explodes/disappears
+    });
+    bombs = bombs.filter(b => b.active);
+}
+
+// Boss collision (jump on head to damage)
+function checkBossCollision() {
+    if (!isBossLevel || !boss || !boss.alive) return;
+    const rectBoss = boss;
+    if (checkCollision(player, rectBoss)) {
+        if (player.velocityY > 0 && player.y < boss.y) {
+            boss.hp -= 1;
+            player.velocityY = -7; // bounce
+            playCoinSound();
+            if (boss.hp <= 0) {
+                boss.alive = false;
+                boss.state = 'defeated';
+                // Raise doors to open path
+                bossDoors.forEach(d => { d.active = false; d.y = 60; });
+                gameStatus.textContent = '🎉 Bomb Man defeated! Doors opened!';
+            }
+        } else {
+            // Damage player if they touch from side/below
+            playDeathSound();
+            resetPlayer();
+            gameStatus.textContent = '💥 Bomb Man got you!';
+        }
+    }
+}
+
+// Player death from bombs
+function checkBombCollision() {
+    if (!isBossLevel) return;
+    for (let b of bombs) {
+        if (b.active && checkCollision(player, b)) {
+            playDeathSound();
+            resetPlayer();
+            gameStatus.textContent = '💣 Hit by a bomb!';
+            break;
         }
     }
 }
@@ -866,12 +1293,12 @@ function checkWinCondition() {
         playWinSound();
         stopBackgroundMusic();
         
-        if (gameState.currentLevel === 1) {
-            // Show level transition screen
+        if (gameState.currentLevel < 4) {
+            // Show level transition screen to next level
             gameState.showLevelTransition = true;
-            gameStatus.textContent = `🎉 Level 1 Complete! Blocks used: ${gameState.blocksUsed}, Coins: ${gameState.coins}`;
+            gameStatus.textContent = `🎉 Level ${gameState.currentLevel} Complete! Blocks used: ${gameState.blocksUsed}, Coins: ${gameState.coins}`;
         } else {
-            // Game complete
+            // Game complete after Level 3
             gameState.won = true;
             gameStatus.textContent = `🎉 Congratulations! You beat the game! Final Score - Blocks used: ${gameState.blocksUsed}, Coins: ${gameState.coins}`;
         }
@@ -920,16 +1347,20 @@ function update() {
     
     // Update enemies
     updateEnemies();
+    // Boss and bombs (Level 4)
+    updateBossLevel();
     
     // Check collisions
     checkPlatformCollision();
     checkObstacleCollision();
+    checkBossCollision();
     checkEnemyCollision();
     checkCoinCollection();
     checkStarCollection();
+    checkBombCollision();
 
-    // Pit death on Level 2 when falling below the screen
-    if (gameState.currentLevel === 2 && player.y > canvas.height) {
+    // Pit death on Levels 2+ when falling below the screen
+    if (gameState.currentLevel >= 2 && player.y > canvas.height) {
         playDeathSound();
         resetPlayer();
         gameStatus.textContent = "💀 You fell into a pit!";
@@ -1018,6 +1449,33 @@ function render() {
             ctx.fill();
         }
     });
+
+    // Draw bombs (Level 4)
+    if (isBossLevel) {
+        bombs.forEach(b => {
+            ctx.fillStyle = '#222';
+            ctx.fillRect(b.x, b.y, b.width, b.height);
+        });
+    }
+
+    // Draw boss and doors (Level 4)
+    if (isBossLevel) {
+        if (boss) {
+            ctx.fillStyle = boss.alive ? boss.color : '#888';
+            ctx.fillRect(boss.x, boss.y, boss.width, boss.height);
+            // eyes
+            ctx.fillStyle = 'white';
+            ctx.fillRect(boss.x + 6, boss.y + 6, 4, 4);
+            ctx.fillRect(boss.x + boss.width - 10, boss.y + 6, 4, 4);
+        }
+        bossDoors.forEach(d => {
+            ctx.fillStyle = '#A0522D';
+            ctx.fillRect(d.x, d.y, d.width, d.height);
+            ctx.strokeStyle = '#5C3317';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(d.x, d.y, d.width, d.height);
+        });
+    }
     
     // Draw star (single per level)
     if (levelStar && !levelStar.collected) {
@@ -1095,14 +1553,15 @@ function render() {
         ctx.fillStyle = 'white';
         ctx.font = 'bold 24px Arial';
         ctx.textAlign = 'center';
-        ctx.fillText('🎉 Level 1 Complete! 🎉', canvas.width / 2, canvas.height / 2 - 60);
+        ctx.fillText(`🎉 Level ${gameState.currentLevel} Complete! 🎉`, canvas.width / 2, canvas.height / 2 - 60);
         
         ctx.font = '18px Arial';
         ctx.fillText(`Blocks Used: ${gameState.blocksUsed}/${gameState.maxBlocks}`, canvas.width / 2, canvas.height / 2 - 20);
         ctx.fillText(`Coins Collected: ${gameState.coins}/${coins.length}`, canvas.width / 2, canvas.height / 2 + 10);
         
         ctx.font = '16px Arial';
-        ctx.fillText('Press SPACE to continue to Level 2', canvas.width / 2, canvas.height / 2 + 50);
+        const nextLevelLabel = gameState.currentLevel + 1;
+        ctx.fillText(`Press SPACE to continue to Level ${nextLevelLabel}`, canvas.width / 2, canvas.height / 2 + 50);
     }
 }
 
