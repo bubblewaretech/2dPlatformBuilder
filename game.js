@@ -4,6 +4,9 @@ const JUMP_FORCE = -9; // Slightly increased jump height
 const MOVE_SPEED = 5; // Increased move speed
 const BLOCK_SIZE = 32;
 const PLAYER_SIZE = 24;
+// Make head-stomps more forgiving (in pixels)
+const STOMP_TOLERANCE_ENEMY = 12;
+const STOMP_TOLERANCE_BOSS = 20;
 
 // Game state
 let gameState = {
@@ -103,6 +106,8 @@ let boss = null; // { x,y,width,height,color,hp,state,targetX,targetY,timers }
 let bossDoors = []; // two door objects acting as dynamic platforms
 let bombs = []; // { x,y,vx,vy,width,height,active }
 let isBossLevel = false;
+let bossFightTriggered = false; // entered arena and countdown started
+let bossEntryTime = 0; // timestamp when entry detected
 
 // Canvas setup
 const canvas = document.getElementById('gameCanvas');
@@ -360,7 +365,9 @@ function checkEnemyCollision() {
     for (let enemy of enemies) {
         if (enemy.alive && checkCollision(player, enemy)) {
             // Check if player is jumping on enemy (from above)
-            if (player.velocityY > 0 && player.y < enemy.y) {
+            const playerBottom = player.y + player.height;
+            const enemyTop = enemy.y;
+            if (player.velocityY > 0 && (playerBottom - enemyTop) <= STOMP_TOLERANCE_ENEMY) {
                 // Player jumps on enemy
                 enemy.alive = false;
                 player.velocityY = -6; // Small bounce
@@ -442,6 +449,16 @@ function resetPlayer() {
     }
     if (Array.isArray(enemies)) {
         enemies.forEach(enemy => { enemy.alive = true; });
+    }
+
+    // Reset boss fight state if on boss level
+    if (isBossLevel) {
+        // Remove any existing door platforms and reset doors/boss
+        platforms = platforms.filter(p => !p.isBossDoor);
+        bombs = [];
+        bossFightTriggered = false;
+        bossEntryTime = 0;
+        initBossLevelState();
     }
 }
 
@@ -937,7 +954,9 @@ function generateLevel4() {
     const enemies = []; // regular enemies not used
 
     // Flat ground to traverse to arena
-    platforms.push({ x: 0, y: 368, width: levelWidth, height: 32, color: '#8B4513', isGround: true });
+    const groundY = 368;
+    const groundH = 32;
+    platforms.push({ x: 0, y: groundY, width: levelWidth, height: groundH, color: '#8B4513', isGround: true });
 
     // Arena frame (blue): left pillar, top beam, right pillar
     const arenaLeft = 500;
@@ -945,8 +964,10 @@ function generateLevel4() {
     const arenaRight = arenaLeft + arenaWidth;
     const pillarWidth = 24;
     const beamHeight = 24;
-    const pillarHeight = 260; // extends close to ground
     const topY = 120;
+    // Leave an entry gap under pillars so player can enter before doors close
+    const entryGap = 48; // clearance between pillar bottom and ground top
+    const pillarHeight = (groundY - entryGap) - topY;
 
     // Left pillar
     platforms.push({ x: arenaLeft, y: topY, width: pillarWidth, height: pillarHeight, color: '#1E90FF', isArena: true });
@@ -959,11 +980,9 @@ function generateLevel4() {
     platforms.push({ x: arenaLeft + 36, y: topY + 120, width: 40, height: 16, color: '#8B4513', isArenaLedge: true });
     platforms.push({ x: arenaRight - 76, y: topY + 120, width: 40, height: 16, color: '#8B4513', isArenaLedge: true });
 
-    // Goal flag beyond the arena on the right
+    // Goal flag beyond the arena on the right, on the ground
     const flagX = arenaRight + 70;
-    const flagY = 368 - 32 - 32 + 24; // near ground
-    const endGoal = { x: flagX, y: 56, width: 32, height: 32, color: '#4CAF50' };
-    // Use same y as level 1 goal values (top-left origin); keep 56 from previous levels consistency
+    const endGoal = { x: flagX, y: groundY - 32, width: 32, height: 32, color: '#4CAF50' };
 
     return {
         platforms,
@@ -1016,6 +1035,8 @@ function loadLevel(levelNumber) {
     bombs = [];
     boss = null;
     bossDoors = [];
+    bossFightTriggered = false;
+    bossEntryTime = 0;
     
     // Reset coins and enemies
     coins.forEach(coin => coin.collected = false);
@@ -1067,31 +1088,38 @@ function initBossLevelState() {
     const arenaWidth = 360;
     const arenaRight = arenaLeft + arenaWidth;
     const topY = 120;
+    const pillarWidth = 24;
+    const beamHeight = 24;
 
-    // Boss starts in the top-left corner inside the blue area
+    // Boss starts in the top-left corner inside the blue area (not overlapping walls/beam)
     boss = {
-        x: arenaLeft + 10,
-        y: topY + 10,
+        x: arenaLeft + pillarWidth + 8,
+        y: topY + beamHeight + 8,
         width: 28,
         height: 28,
         color: '#ff4d4d',
         hp: 3,
         alive: true,
-        state: 'idle', // idle | throwing | descend | rising | defeated
+        state: 'idle', // idle | swoop | defeated
         lastThrow: 0,
         throwInterval: 1200,
-        lastDescend: 0,
-        descendInterval: 4000,
-        targetX: arenaLeft + 10,
-        targetY: topY + 10
+        lastSwoop: 0,
+        swoopInterval: 4000,
+        swoopDirection: 1,
+        homeX: arenaLeft + pillarWidth + 8,
+        homeY: topY + beamHeight + 8,
+        swoopStart: 0,
+        swoopDuration: 1500,
+        swoopFromX: 0,
+        swoopTargetX: 0
     };
 
     // Doors just inside the pillars; start raised (inactive)
     const doorWidth = 28;
     const doorHeight = 120;
     bossDoors = [
-        { x: arenaLeft + 26, y: topY - doorHeight, width: doorWidth, height: doorHeight, color: '#8B4513', active: false },
-        { x: arenaRight - 26 - doorWidth, y: topY - doorHeight, width: doorWidth, height: doorHeight, color: '#8B4513', active: false }
+        { x: arenaLeft + 26, y: topY - doorHeight, width: doorWidth, height: doorHeight, color: '#8B4513', active: false, isBossDoor: true },
+        { x: arenaRight - 26 - doorWidth, y: topY - doorHeight, width: doorWidth, height: doorHeight, color: '#8B4513', active: false, isBossDoor: true }
     ];
 }
 
@@ -1113,17 +1141,47 @@ function updateBossLevel(delta) {
 
     const now = performance.now ? performance.now() : Date.now();
 
-    // Trigger fight when player enters the arena
-    const inArenaX = player.x > 500 && player.x < 860;
-    const inArenaY = player.y < 360; // basically anywhere above ground near arena
+    // Trigger fight when player enters the arena (with margin + delay)
+    // Match arena geometry from generateLevel4
+    const arenaLeft = 500;
+    const arenaWidth = 360;
+    const arenaRight = arenaLeft + arenaWidth;
+    const pillarWidth = 24;
+    const beamHeight = 24;
+    const topY = 120;
+    const interiorLeft = arenaLeft + pillarWidth;
+    const interiorRight = arenaRight - pillarWidth;
+    const pxCenter = player.x + player.width / 2;
+    const pBottom = player.y + player.height;
+    const pLeft = player.x;
+    const pRight = player.x + player.width;
+    // Require the full player to be inside by a margin so doors don't trap them outside
+    const margin = 32;
+    const inArenaX = (pLeft > interiorLeft + margin) && (pRight < interiorRight - margin);
+    const inArenaY = pBottom > (120 + beamHeight + 2) && pBottom < 368 + 1;
     const fightStarted = bossDoors[0] && bossDoors[0].active;
-    if (!fightStarted && inArenaX && inArenaY) {
-        // Drop doors
-        bossDoors.forEach(d => { d.active = true; d.y = 240; }); // initial drop position
-        // Insert into platforms so they block the player
-        // We add once; they are dynamic but collision just uses their current rect
-        platforms.push(bossDoors[0], bossDoors[1]);
-        gameStatus.textContent = '⚠️ Doors closed! Defeat Bomb Man!';
+    // If boss already defeated, make sure doors stay open and non-collidable
+    if (boss && !boss.alive) {
+        bossDoors.forEach(d => { d.active = false; d.y = topY - d.height; });
+        platforms = platforms.filter(p => !p.isBossDoor);
+        bossFightTriggered = false;
+    }
+    if (!fightStarted && boss && boss.alive) {
+        if (inArenaX && inArenaY) {
+            if (!bossFightTriggered) {
+                bossFightTriggered = true;
+                bossEntryTime = now;
+            } else if (now - bossEntryTime > 800) { // wait ~0.8s after fully inside
+                // Drop doors
+                bossDoors.forEach(d => { d.active = true; d.y = 240; }); // initial drop position
+                // Insert into platforms so they block the player
+                platforms.push(bossDoors[0], bossDoors[1]);
+                gameStatus.textContent = '⚠️ Doors closed! Defeat Bomb Man!';
+            }
+        } else {
+            // Reset trigger if they step back out before timer completes
+            bossFightTriggered = false;
+        }
     }
 
     // Animate doors to ground when active
@@ -1140,21 +1198,28 @@ function updateBossLevel(delta) {
             spawnBomb();
             boss.lastThrow = now;
         }
-        // Descend periodically to allow head-jump
-        if (fightStarted && now - boss.lastDescend > boss.descendInterval) {
-            boss.state = 'descend';
-            boss.lastDescend = now;
+        // Start periodic swoop in a U-shaped arc
+        if (fightStarted && boss.state === 'idle' && (now - boss.lastSwoop > boss.swoopInterval)) {
+            boss.state = 'swoop';
+            boss.lastSwoop = now;
+            boss.swoopStart = now;
+            boss.swoopFromX = boss.x;
+            const interiorLeft = arenaLeft + pillarWidth + 10;
+            const interiorRight = arenaRight - pillarWidth - boss.width - 10;
+            boss.swoopTargetX = (boss.swoopDirection > 0) ? interiorRight : interiorLeft;
+            boss.swoopDirection *= -1;
         }
-        if (boss.state === 'descend') {
-            boss.y += 2.2;
-            if (boss.y >= 260) {
-                boss.state = 'rising';
-            }
-        } else if (boss.state === 'rising') {
-            boss.y -= 2.0;
-            if (boss.y <= 130) {
-                boss.y = 130;
+        if (boss.state === 'swoop') {
+            const t = Math.min(1, (now - boss.swoopStart) / boss.swoopDuration);
+            // Horizontal interpolation
+            boss.x = boss.swoopFromX + (boss.swoopTargetX - boss.swoopFromX) * t;
+            // Vertical U arc about homeY
+            const amplitude = 140;
+            boss.y = boss.homeY + amplitude * Math.sin(Math.PI * t);
+            if (t >= 1) {
                 boss.state = 'idle';
+                boss.x = boss.swoopTargetX;
+                boss.y = boss.homeY;
             }
         }
     }
@@ -1182,15 +1247,28 @@ function checkBossCollision() {
     if (!isBossLevel || !boss || !boss.alive) return;
     const rectBoss = boss;
     if (checkCollision(player, rectBoss)) {
-        if (player.velocityY > 0 && player.y < boss.y) {
+        const playerBottom = player.y + player.height;
+        const bossTop = boss.y;
+        const prevBottom = playerBottom - player.velocityY;
+        const bossCenterY = boss.y + boss.height / 2;
+        const playerCenterY = player.y + player.height / 2;
+        const falling = player.velocityY > 0;
+        const crossedTopEdge = prevBottom <= bossTop + STOMP_TOLERANCE_BOSS;
+        const mostlyAbove = playerCenterY < bossCenterY;
+        if (falling && (crossedTopEdge || mostlyAbove)) {
             boss.hp -= 1;
-            player.velocityY = -7; // bounce
+            // Snap player onto boss head and bounce
+            player.y = bossTop - player.height;
+            player.velocityY = -7;
             playCoinSound();
             if (boss.hp <= 0) {
                 boss.alive = false;
                 boss.state = 'defeated';
-                // Raise doors to open path
-                bossDoors.forEach(d => { d.active = false; d.y = 60; });
+                // Fully raise doors and make them non-collidable/hidden
+                bossDoors.forEach(d => { d.active = false; d.y = 0; });
+                platforms = platforms.filter(p => !p.isBossDoor);
+                bossDoors = [];
+                bossFightTriggered = false;
                 gameStatus.textContent = '🎉 Bomb Man defeated! Doors opened!';
             }
         } else {
@@ -1574,14 +1652,15 @@ function gameLoop() {
 
 // Initialize audio and start the game
 initAudio();
-playBackgroundMusic();
 
-// Initialize UI and star for the starting level
-levelStar = spawnLevelStar();
-gameState.starsThisLevel = 0;
-if (totalStarsDisplay) totalStarsDisplay.textContent = 1;
-if (starCount) starCount.textContent = gameState.starsThisLevel;
-updateBlockCounters();
+// Read level from URL param (?level=N) and load
+(() => {
+    const params = new URLSearchParams(window.location.search);
+    let startLevel = parseInt(params.get('level'), 10);
+    if (isNaN(startLevel) || startLevel < 1 || startLevel > 4) startLevel = 1;
+    gameState.currentLevel = startLevel;
+    loadLevel(startLevel);
+})();
 
 gameLoop();
 
