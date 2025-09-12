@@ -362,25 +362,49 @@ function checkObstacleCollision() {
 
 // Check collision with enemies
 function checkEnemyCollision() {
+    // Gather all enemies currently colliding with the player
+    const colliding = [];
     for (let enemy of enemies) {
         if (enemy.alive && checkCollision(player, enemy)) {
-            // Check if player is jumping on enemy (from above)
-            const playerBottom = player.y + player.height;
-            const enemyTop = enemy.y;
-            if (player.velocityY > 0 && (playerBottom - enemyTop) <= STOMP_TOLERANCE_ENEMY) {
-                // Player jumps on enemy
-                enemy.alive = false;
-                player.velocityY = -6; // Small bounce
-                playCoinSound(); // Use coin sound for enemy defeat
-                gameStatus.textContent = "💥 Enemy defeated!";
-            } else {
-                // Player hits enemy from side or below - dies
-                playDeathSound();
-                resetPlayer();
-                gameStatus.textContent = "💀 You died! Try again!";
-            }
+            colliding.push(enemy);
         }
     }
+    if (colliding.length === 0) return;
+
+    const playerBottom = player.y + player.height;
+    const prevBottom = playerBottom - player.velocityY;
+    const falling = player.velocityY > 0;
+
+    // Determine which of the collisions count as a stomp
+    const stomped = [];
+    for (let enemy of colliding) {
+        const enemyTop = enemy.y;
+        const topOverlap = (playerBottom - enemyTop) <= STOMP_TOLERANCE_ENEMY;
+        const crossedTopEdge = prevBottom <= enemyTop + STOMP_TOLERANCE_ENEMY;
+        if (falling && (topOverlap || crossedTopEdge)) {
+            stomped.push(enemy);
+        }
+    }
+
+    if (stomped.length > 0) {
+        // Defeat all stomped enemies in this frame and bounce once
+        let topMost = Infinity;
+        stomped.forEach(e => {
+            e.alive = false;
+            if (e.y < topMost) topMost = e.y;
+        });
+        // Snap player onto the highest enemy head to avoid side re-collision
+        player.y = topMost - player.height;
+        player.velocityY = -6; // Small bounce
+        playCoinSound();
+        gameStatus.textContent = "💥 Enemy defeated!";
+        return; // Ignore any side-collisions in this frame since stomp succeeded
+    }
+
+    // No valid stomp among collisions: player dies
+    playDeathSound();
+    resetPlayer();
+    gameStatus.textContent = "💀 You died! Try again!";
 }
 
 // Update enemies
@@ -1157,7 +1181,8 @@ function updateBossLevel(delta) {
     const pRight = player.x + player.width;
     // Require the full player to be inside by a margin so doors don't trap them outside
     const margin = 32;
-    const inArenaX = (pLeft > interiorLeft + margin) && (pRight < interiorRight - margin);
+    // Consider arena entered when player clearly steps past the left pillar
+    const enteredArenaX = (pLeft > interiorLeft + 10);
     const inArenaY = pBottom > (120 + beamHeight + 2) && pBottom < 368 + 1;
     const fightStarted = bossDoors[0] && bossDoors[0].active;
     // If boss already defeated, make sure doors stay open and non-collidable
@@ -1166,20 +1191,18 @@ function updateBossLevel(delta) {
         platforms = platforms.filter(p => !p.isBossDoor);
         bossFightTriggered = false;
     }
+    // Immediately close doors once player is fully inside the arena bounds
     if (!fightStarted && boss && boss.alive) {
-        if (inArenaX && inArenaY) {
-            if (!bossFightTriggered) {
-                bossFightTriggered = true;
-                bossEntryTime = now;
-            } else if (now - bossEntryTime > 800) { // wait ~0.8s after fully inside
-                // Drop doors
-                bossDoors.forEach(d => { d.active = true; d.y = 240; }); // initial drop position
-                // Insert into platforms so they block the player
-                platforms.push(bossDoors[0], bossDoors[1]);
-                gameStatus.textContent = '⚠️ Doors closed! Defeat Bomb Man!';
-            }
+        if (enteredArenaX && inArenaY) {
+            bossFightTriggered = true;
+            bossEntryTime = now;
+            // Activate and insert doors right away to prevent escape
+            bossDoors.forEach(d => { d.active = true; d.y = 240; });
+            // Avoid duplicate insertion
+            const hasDoors = platforms.some(p => p.isBossDoor);
+            if (!hasDoors) platforms.push(bossDoors[0], bossDoors[1]);
+            gameStatus.textContent = '⚠️ Doors closed! Defeat Bomb Man!';
         } else {
-            // Reset trigger if they step back out before timer completes
             bossFightTriggered = false;
         }
     }
